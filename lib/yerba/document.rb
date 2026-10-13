@@ -2,6 +2,8 @@
 
 module Yerba
   class Document
+    include NodeTree
+
     ROOT_SELECTOR = ""
 
     def self.cache
@@ -74,6 +76,48 @@ module Yerba
       return false unless @path && @loaded_mtime
 
       File.mtime(@path) != @loaded_mtime
+    end
+
+    def [](selector)
+      return native_node_at(selector) unless selector.is_a?(String)
+
+      parsed = Selector.parse(selector)
+      matches = find_nodes(parsed)
+      return native_node_at(selector) if matches.nil?
+
+      matches = matches.map { |match| match&.dup }
+      parsed.wildcard? ? matches.compact : matches.first
+    end
+    alias node_at []
+
+    def value_at(selector)
+      return native_value_at(selector) unless selector.is_a?(String) || selector.is_a?(Selector)
+
+      parsed = Selector.parse(selector)
+      matches = find_nodes(parsed) unless parsed.wildcard?
+      return native_value_at(selector) if matches.nil?
+
+      node = matches.first
+      return nil if node.nil?
+
+      node.is_a?(Scalar) && node.tree_node? ? node.value : native_value_at(selector)
+    end
+
+    def nodes
+      generation = native_generation
+      return @nodes if @nodes_generation == generation
+
+      @nodes_generation = generation
+      @nodes = build_nodes(native_node_records)
+    end
+
+    def length_at(selector)
+      parsed = Selector.parse(selector)
+      matches = find_nodes(parsed) unless parsed.wildcard?
+      return Array(value_at(selector)).length if matches.nil?
+
+      children = matches.first&.tree_children
+      children.is_a?(Array) ? children.length : 0
     end
 
     def dig(*keys)
@@ -176,6 +220,96 @@ module Yerba
     end
 
     private
+
+    def build_nodes(records)
+      built = []
+
+      records.each do |parent, type, selector, key_name, value, has_value, location, key_location|
+        key = Scalar.from_document(nil, nil, key_location, nil, value: key_name) if key_name
+        node = build_node(type, selector, location, key, value)
+
+        node.attach_tree(built.first || node, tree_container(type), !has_value) if type
+        add_child(built[parent], key_name, node) unless parent.negative?
+
+        built << node
+      end
+
+      built.each { |node| node&.tree_children&.freeze }
+      built.first
+    end
+
+    def build_node(type, selector, location, key, value)
+      case type
+      when :scalar
+        Scalar.from_document(self, selector, location, key, value: value)
+      when :map
+        Map.from_document(self, selector, location, key)
+      when :sequence
+        Sequence.from_document(self, selector, location, key)
+      else
+        native_node_at(selector)
+      end
+    end
+
+    def tree_container(type)
+      case type
+      when :map
+        {}
+      when :sequence
+        []
+      end
+    end
+
+    def add_child(parent, key_name, node)
+      children = parent.tree_children
+
+      if children.is_a?(Hash)
+        children[key_name] = node
+      else
+        children << node
+      end
+    end
+
+    def find_nodes(selector)
+      return nil if selector.relative? || malformed?(selector.to_s) || nodes.nil?
+
+      wildcard = selector.wildcard?
+
+      selector.segments.reduce([nodes]) do |current, segment|
+        current.flat_map do |node|
+          children = node&.tree_node? ? node.tree_children : nil
+          matches = children && child_matches(children, segment)
+          return nil if matches.nil?
+
+          wildcard && children.is_a?(Hash) ? matches.reject { |match| valueless_entry?(match) } : matches
+        end
+      end
+    end
+
+    def valueless_entry?(node)
+      node.valueless?
+    end
+
+    def malformed?(selector)
+      selector.end_with?(".") || selector.include?("..") || (selector.include?("[") && !selector.include?("]"))
+    end
+
+    def child_matches(children, segment)
+      case segment
+      when Selector::ALL_ITEMS
+        children if children.is_a?(Array)
+      when Selector::ALL_KEYS
+        children.values if children.is_a?(Hash)
+      when Integer
+        return nil unless children.is_a?(Array)
+
+        segment < children.length ? [children[segment]] : []
+      else
+        return nil unless children.is_a?(Hash)
+
+        children.key?(segment) ? [children[segment]] : []
+      end
+    end
 
     def empty_root?
       root.is_a?(Scalar) && root.value.nil?
