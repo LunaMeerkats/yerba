@@ -33,6 +33,7 @@ pub struct LocatedNode {
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use rowan::ast::AstNode;
 use rowan::{TextRange, TextSize};
@@ -47,7 +48,7 @@ use crate::syntax::{
   column_at, dedent_block_scalar, extract_scalar, extract_scalar_text, find_block_map, find_block_sequence, find_entry_by_key, find_flow_entry_by_key,
   find_flow_map, find_flow_sequence, find_scalar_token, first_collection, flow_map_entries, flow_sequence_entries, format_scalar_value, in_flow_collection,
   is_map_key, is_yaml_non_string, line_at, line_start_at, preceding_whitespace_indent, preceding_whitespace_token, raw_scalar_value, removal_range,
-  FirstCollection, ScalarValue,
+  FirstCollection, LineIndex, ScalarValue,
 };
 
 #[derive(Debug, Clone)]
@@ -185,6 +186,7 @@ pub struct Document {
   root: SyntaxNode,
   path: Option<PathBuf>,
   generation: u64,
+  line_index: OnceLock<LineIndex>,
 }
 
 impl Document {
@@ -197,6 +199,7 @@ impl Document {
       root: tree,
       path: None,
       generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
+      line_index: OnceLock::new(),
     })
   }
 
@@ -538,6 +541,10 @@ impl Document {
     self.root.text().to_string()
   }
 
+  fn line_index(&self) -> &LineIndex {
+    self.line_index.get_or_init(|| LineIndex::new(&self.source_text()))
+  }
+
   fn reparse(&mut self, new_source: &str) -> Result<(), YerbaError> {
     let document = Self::parse(new_source)?;
     let path = self.path.take();
@@ -589,17 +596,17 @@ fn check_duplicate_keys(root: &SyntaxNode) -> Result<(), YerbaError> {
   Ok(())
 }
 
-pub(crate) fn compute_location(source: &str, start_offset: usize, end_offset: usize) -> Location {
-  let start = start_offset.min(source.len());
-  let end = end_offset.min(source.len());
+pub(crate) fn compute_location(index: &LineIndex, start_offset: usize, end_offset: usize) -> Location {
+  let start = start_offset.min(index.source_length());
+  let end = end_offset.min(index.source_length());
 
   Location {
     start_offset: start,
     end_offset: end,
-    start_line: line_at(source, start),
-    start_column: column_at(source, start),
-    end_line: line_at(source, end),
-    end_column: column_at(source, end),
+    start_line: index.line_at(start),
+    start_column: index.column_at(start),
+    end_line: index.line_at(end),
+    end_column: index.column_at(end),
   }
 }
 

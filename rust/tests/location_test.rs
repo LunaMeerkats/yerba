@@ -190,3 +190,65 @@ fn test_location_of_each_resolved_selector() {
   assert_eq!(info1.location.start_line, 2);
   assert_eq!(info2.location.start_line, 3);
 }
+
+#[test]
+fn test_get_all_located_matches_node_info_locations() {
+  let document = parse(indoc! {"
+    first:
+      name: Alice
+      tags: [a, b]
+    second:
+      name:   Bob
+    third: last"});
+
+  let span = |location: &yerba::Location| {
+    (
+      location.start_offset,
+      location.end_offset,
+      location.start_line,
+      location.start_column,
+      location.end_line,
+      location.end_column,
+    )
+  };
+
+  for selector in ["*", "*.name", "first.tags[]"] {
+    let located = document.get_all_located(selector);
+
+    assert!(!located.is_empty(), "no nodes for {selector}");
+
+    for node in located {
+      let info = document.get_node_info(&node.selector);
+
+      assert_eq!(span(&node.location), span(&info.location), "location of {}", node.selector);
+      assert_eq!(span(&node.key_location), span(&info.key_location), "key location of {}", node.selector);
+      assert_eq!(node.line, info.location.start_line, "line of {}", node.selector);
+    }
+  }
+}
+
+#[test]
+fn test_locations_reflect_edits_after_being_read() {
+  let mut document = parse(indoc! {"
+    a: 1
+    b: 2
+    c: 3
+    d: 4
+  "});
+
+  assert_eq!(document.get_node_info("b").location.start_line, 2);
+  assert_eq!(document.get_all_located("*")[1].line, 2);
+
+  document
+    .insert_into(
+      "long_key_name",
+      "a much longer value than the others",
+      yerba::InsertPosition::Before("b".to_string()),
+    )
+    .unwrap();
+
+  let b = document.get_node_info("b").location;
+
+  assert_eq!((b.start_line, b.start_column), (3, 3));
+  assert_eq!(document.get_all_located("*")[2].line, 3);
+}
