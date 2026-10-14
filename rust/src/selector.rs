@@ -1,5 +1,3 @@
-use std::num::NonZeroU128;
-
 /// A parsed selector used across selectors, conditions, and select fields.
 ///
 /// Selectors starting with `.` are relative to the current item context.
@@ -25,18 +23,14 @@ pub enum SelectorSegment {
   AllItems,
   AllKeys,
   Index(usize),
-  IndexFromEnd(NonZeroU128),
+  IndexFromEnd(usize),
 }
 
 impl SelectorSegment {
   pub(crate) fn sequence_index(&self, length: usize) -> Option<usize> {
     match self {
       SelectorSegment::Index(index) => (*index < length).then_some(*index),
-      SelectorSegment::IndexFromEnd(offset) => {
-        let offset = offset.get();
-
-        (offset <= length as u128).then(|| length - offset as usize)
-      }
+      SelectorSegment::IndexFromEnd(offset) => (*offset <= length).then(|| length - offset),
       _ => None,
     }
   }
@@ -202,7 +196,7 @@ impl Selector {
         }
 
         SelectorSegment::IndexFromEnd(i) => {
-          result.push_str(&format!("[-{}]", i.get()));
+          result.push_str(&format!("[-{}]", i));
         }
       }
     }
@@ -304,11 +298,8 @@ fn parse_index(input: &str) -> Option<SelectorSegment> {
     return None;
   }
 
-  let offset = digits.parse::<u128>().unwrap_or(u128::MAX);
-
-  if offset == 0 {
-    Some(SelectorSegment::Index(0))
-  } else {
-    Some(SelectorSegment::IndexFromEnd(NonZeroU128::new(offset).expect("positive offset")))
+  match digits.parse::<usize>().unwrap_or(usize::MAX) {
+    0 => Some(SelectorSegment::Index(0)),
+    offset => Some(SelectorSegment::IndexFromEnd(offset)),
   }
 }
